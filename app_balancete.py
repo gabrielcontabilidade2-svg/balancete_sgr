@@ -272,7 +272,7 @@ def gerar_pdf_balancete(comunidade, mes, ano, receitas_df, despesas_df, saldo_an
     # Assinatura corrigida
     pdf.cell(55, 5, "Coordenador(a) do CPC", align='C')
     
-    return pdf.output()
+    return pdf.output(dest="S").encode("latin-1")
 
 # 2. Modal de Exclusão
 @st.dialog("🗑️ Confirmar Exclusão")
@@ -470,8 +470,8 @@ if comunidade_sel:
         )
         
         st.download_button(
-            label="📄 Gerar PDF",
-            data=bytes(pdf_bytes),
+            label="📄 Baixar PDF",
+            data=pdf_bytes,
             file_name=f"Balancete_{comunidade_sel}_{mes_sel}_{ano_sel}.pdf",
             mime="application/pdf",
             use_container_width=True
