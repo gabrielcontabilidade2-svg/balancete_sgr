@@ -9,7 +9,7 @@ from supabase import create_client, Client
 # ==============================================================================
 # CONFIGURAÇÕES E INICIALIZAÇÃO SUPABASE
 # ==============================================================================
-st.set_page_config(page_title="Balancete Paroquial", page_icon="📊", layout="centered")
+st.set_page_config(page_title="Balancete Paroquial", page_icon="📊", layout="wide")
 
 SENHA_MESTRA = "Igreja123"
 
