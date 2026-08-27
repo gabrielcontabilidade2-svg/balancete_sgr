@@ -1,34 +1,23 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
 import json
 import time
 from datetime import datetime
 from fpdf import FPDF
+from supabase import create_client, Client
 
 # ==============================================================================
-# CONFIGURAÇÕES E BANCO DE DADOS
+# CONFIGURAÇÕES E INICIALIZAÇÃO SUPABASE
 # ==============================================================================
-# 1. UX Ajustada: layout="centered" torna a tela mais estreita e focada
 st.set_page_config(page_title="Balancete Paroquial", page_icon="📊", layout="wide")
 
-DB_NAME = "banco_balancete.db"
 SENHA_MESTRA = "Igreja123"
 
 COMUNIDADES = [
-    "Imaculada Conceição",
-    "Nossa Senhora Aparecida",
-    "Nossa Senhora da Penha",
-    "Nossa Senhora de Fátima",
-    "Sagrada Família",
-    "Sant'Ana",
-    "Santa Luzia (Fazenda Velha)",
-    "Santa Luzia (Joacima)",
-    "São Brás",
-    "São Francisco de Paula",
-    "São José Operário",
-    "São Pedro",
-    "São Sebastião"
+    "Imaculada Conceição", "Nossa Senhora Aparecida", "Nossa Senhora da Penha",
+    "Nossa Senhora de Fátima", "Sagrada Família", "Sant'Ana",
+    "Santa Luzia (Fazenda Velha)", "Santa Luzia (Joacima)", "São Brás",
+    "São Francisco de Paula", "São José Operário", "São Pedro", "São Sebastião"
 ]
 
 MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", 
@@ -37,44 +26,21 @@ MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
 def format_brl(val):
     return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS balancetes (
-            id TEXT PRIMARY KEY,
-            comunidade TEXT,
-            mes TEXT,
-            ano INTEGER,
-            saldo_anterior REAL,
-            conta_corrente REAL,
-            conta_poupanca REAL,
-            aplicacao REAL,
-            usa_corrente BOOLEAN,
-            usa_poupanca BOOLEAN,
-            usa_aplicacao BOOLEAN,
-            informar_saldo_anterior BOOLEAN
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS itens_balancete (
-            id_balancete TEXT,
-            tipo TEXT,
-            descricao TEXT,
-            valor REAL,
-            FOREIGN KEY(id_balancete) REFERENCES balancetes(id)
-        )
-    ''')
-    conn.commit()
-    conn.close()
+# Inicializa o cliente do Supabase
+@st.cache_resource
+def init_connection() -> Client:
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
 
-init_db()
+supabase = init_connection()
 
+# ==============================================================================
+# FUNÇÕES DE ESTADO E PERSISTÊNCIA (SUPABASE)
+# ==============================================================================
 def obter_saldo_final_mes_anterior(comunidade, mes_atual, ano_atual):
-    """Busca o balancete do mês anterior no banco de dados e calcula o saldo final dele."""
     idx = MESES.index(mes_atual)
     
-    # Lógica para voltar no tempo (se for Janeiro, volta para Dezembro do ano passado)
     if idx == 0:
         mes_ant = MESES[11]
         ano_ant = ano_atual - 1
@@ -84,99 +50,98 @@ def obter_saldo_final_mes_anterior(comunidade, mes_atual, ano_atual):
         
     id_ant = f"{comunidade}_{mes_ant}_{ano_ant}"
     
-    conn = sqlite3.connect(DB_NAME)
-    df_bal = pd.read_sql(f"SELECT saldo_anterior FROM balancetes WHERE id = '{id_ant}'", conn)
+    # Busca o saldo inicial do mês anterior
+    response_bal = supabase.table('balancetes').select('saldo_anterior').eq('id', id_ant).execute()
     
-    # Se não existir balancete no mês anterior, retorna 0.0
-    if df_bal.empty:
-        conn.close()
+    if not response_bal.data:
         return 0.0
         
-    saldo_ant = df_bal.iloc[0]['saldo_anterior']
+    saldo_ant = response_bal.data[0]['saldo_anterior']
     
-    # Soma as receitas do mês anterior
-    df_rec = pd.read_sql(f"SELECT SUM(valor) as val FROM itens_balancete WHERE id_balancete = '{id_ant}' AND tipo = 'Receita'", conn)
-    tot_rec = df_rec.iloc[0]['val'] if not pd.isna(df_rec.iloc[0]['val']) else 0.0
+    # Busca e soma as receitas e despesas
+    response_itens = supabase.table('itens_balancete').select('tipo, valor').eq('id_balancete', id_ant).execute()
     
-    # Soma as despesas do mês anterior
-    df_desp = pd.read_sql(f"SELECT SUM(valor) as val FROM itens_balancete WHERE id_balancete = '{id_ant}' AND tipo = 'Despesa'", conn)
-    tot_desp = df_desp.iloc[0]['val'] if not pd.isna(df_desp.iloc[0]['val']) else 0.0
+    tot_rec = sum(item['valor'] for item in response_itens.data if item['tipo'] == 'Receita')
+    tot_desp = sum(item['valor'] for item in response_itens.data if item['tipo'] == 'Despesa')
     
-    conn.close()
-    
-    # O Saldo Final do mês anterior é a base para o Saldo Anterior do mês atual
     return saldo_ant + tot_rec - tot_desp
 
-# ==============================================================================
-# FUNÇÕES DE ESTADO, PERSISTÊNCIA E PDF
-# ==============================================================================
 def carregar_dados_balancete(id_balancete, comunidade, mes, ano):
-    conn = sqlite3.connect(DB_NAME)
-    df_bal = pd.read_sql(f"SELECT * FROM balancetes WHERE id = '{id_balancete}'", conn)
+    response_bal = supabase.table('balancetes').select('*').eq('id', id_balancete).execute()
+    dados_bal = response_bal.data
     
-    if not df_bal.empty:
-        b = df_bal.iloc[0]
+    if dados_bal:
+        b = dados_bal[0]
         st.session_state['saldo_anterior'] = b['saldo_anterior']
         st.session_state['conta_corrente'] = b['conta_corrente']
         st.session_state['conta_poupanca'] = b['conta_poupanca']
         st.session_state['aplicacao'] = b['aplicacao']
-        st.session_state['usa_corrente'] = bool(b['usa_corrente'])
-        st.session_state['usa_poupanca'] = bool(b['usa_poupanca'])
-        st.session_state['usa_aplicacao'] = bool(b['usa_aplicacao'])
-        st.session_state['informar_saldo_anterior'] = bool(b['informar_saldo_anterior'])
+        st.session_state['usa_corrente'] = b['usa_corrente']
+        st.session_state['usa_poupanca'] = b['usa_poupanca']
+        st.session_state['usa_aplicacao'] = b['usa_aplicacao']
+        st.session_state['informar_saldo_anterior'] = b['informar_saldo_anterior']
         
-        df_itens = pd.read_sql(f"SELECT tipo, descricao as Descrição, valor as Valor FROM itens_balancete WHERE id_balancete = '{id_balancete}'", conn)
-        df_rec = df_itens[df_itens['tipo'] == 'Receita'][['Descrição', 'Valor']]
-        df_desp = df_itens[df_itens['tipo'] == 'Despesa'][['Descrição', 'Valor']]
+        response_itens = supabase.table('itens_balancete').select('tipo, descricao, valor').eq('id_balancete', id_balancete).execute()
+        dados_itens = response_itens.data
+        
+        if dados_itens:
+            df_itens = pd.DataFrame(dados_itens)
+            df_rec = df_itens[df_itens['tipo'] == 'Receita'][['descricao', 'valor']].rename(columns={'descricao': 'Descrição', 'valor': 'Valor'})
+            df_desp = df_itens[df_itens['tipo'] == 'Despesa'][['descricao', 'valor']].rename(columns={'descricao': 'Descrição', 'valor': 'Valor'})
+        else:
+            df_rec = pd.DataFrame(columns=['Descrição', 'Valor'])
+            df_desp = pd.DataFrame(columns=['Descrição', 'Valor'])
     else:
-        # AQUI OCORRE A PERSISTÊNCIA: Puxa o valor do mês passado
         st.session_state['saldo_anterior'] = obter_saldo_final_mes_anterior(comunidade, mes, ano)
-        
         st.session_state['conta_corrente'] = 0.0
         st.session_state['conta_poupanca'] = 0.0
         st.session_state['aplicacao'] = 0.0
         st.session_state['usa_corrente'] = False
         st.session_state['usa_poupanca'] = False
         st.session_state['usa_aplicacao'] = False
-        st.session_state['informar_saldo_anterior'] = False # Deixa o campo bloqueado por padrão, usando o valor persistido
+        st.session_state['informar_saldo_anterior'] = False
         
         df_rec = pd.DataFrame([{"Descrição": "Dízimo", "Valor": 0.0}, {"Descrição": "Ofertas", "Valor": 0.0}])
         df_desp = pd.DataFrame([{"Descrição": "Repasse para Paróquia/Diocese 55%", "Valor": 0.0}])
         
-    conn.close()
     st.session_state['receitas_df'] = df_rec.reset_index(drop=True)
     st.session_state['despesas_df'] = df_desp.reset_index(drop=True)
 
 def salvar_dados_balancete(id_balancete, comunidade, mes, ano, receitas_df, despesas_df):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("DELETE FROM balancetes WHERE id=?", (id_balancete,))
-    c.execute("""
-        INSERT INTO balancetes 
-        (id, comunidade, mes, ano, saldo_anterior, conta_corrente, conta_poupanca, aplicacao, usa_corrente, usa_poupanca, usa_aplicacao, informar_saldo_anterior)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        id_balancete, comunidade, mes, ano, 
-        st.session_state['saldo_anterior'], st.session_state['conta_corrente'], 
-        st.session_state['conta_poupanca'], st.session_state['aplicacao'],
-        st.session_state['usa_corrente'], st.session_state['usa_poupanca'], 
-        st.session_state['usa_aplicacao'], st.session_state['informar_saldo_anterior']
-    ))
+    # Insere ou atualiza (Upsert) as configurações principais
+    dados_balancete = {
+        "id": id_balancete,
+        "comunidade": comunidade,
+        "mes": mes,
+        "ano": ano,
+        "saldo_anterior": st.session_state['saldo_anterior'],
+        "conta_corrente": st.session_state['conta_corrente'],
+        "conta_poupanca": st.session_state['conta_poupanca'],
+        "aplicacao": st.session_state['aplicacao'],
+        "usa_corrente": st.session_state['usa_corrente'],
+        "usa_poupanca": st.session_state['usa_poupanca'],
+        "usa_aplicacao": st.session_state['usa_aplicacao'],
+        "informar_saldo_anterior": st.session_state['informar_saldo_anterior']
+    }
     
-    c.execute("DELETE FROM itens_balancete WHERE id_balancete=?", (id_balancete,))
+    supabase.table('balancetes').upsert(dados_balancete).execute()
+    
+    # Exclui itens antigos e insere os novos
+    supabase.table('itens_balancete').delete().eq('id_balancete', id_balancete).execute()
+    
+    itens = []
     for _, row in receitas_df.iterrows():
         if row['Descrição'] and pd.notna(row['Descrição']):
-            c.execute("INSERT INTO itens_balancete (id_balancete, tipo, descricao, valor) VALUES (?, 'Receita', ?, ?)", 
-                      (id_balancete, row['Descrição'], row.get('Valor', 0.0)))
+            itens.append({"id_balancete": id_balancete, "tipo": "Receita", "descricao": row['Descrição'], "valor": row.get('Valor', 0.0)})
             
     for _, row in despesas_df.iterrows():
         if row['Descrição'] and pd.notna(row['Descrição']):
-            c.execute("INSERT INTO itens_balancete (id_balancete, tipo, descricao, valor) VALUES (?, 'Despesa', ?, ?)", 
-                      (id_balancete, row['Descrição'], row.get('Valor', 0.0)))
+            itens.append({"id_balancete": id_balancete, "tipo": "Despesa", "descricao": row['Descrição'], "valor": row.get('Valor', 0.0)})
             
-    conn.commit()
-    conn.close()
-    st.success("✅ Balancete salvo com sucesso no banco de dados!")
+    if itens:
+        supabase.table('itens_balancete').insert(itens).execute()
+        
+    st.success("✅ Balancete salvo com sucesso na nuvem (Supabase)!")
 
 def gerar_pdf_balancete(comunidade, mes, ano, receitas_df, despesas_df, saldo_ant, total_rec, total_desp, saldo_fin, saldos_bancos):
     pdf = FPDF()
@@ -317,13 +282,11 @@ def modal_excluir(id_balancete):
     
     if st.button("Confirmar Exclusão", type="primary", use_container_width=True):
         if senha == SENHA_MESTRA:
-            conn = sqlite3.connect(DB_NAME)
-            conn.execute("DELETE FROM balancetes WHERE id=?", (id_balancete,))
-            conn.execute("DELETE FROM itens_balancete WHERE id_balancete=?", (id_balancete,))
-            conn.commit()
-            conn.close()
-            st.success("Balancete excluído do sistema.")
-            st.session_state['id_atual'] = None # Força o recarregamento na tela
+            # A exclusão no balancetes via Supabase deleta os itens também devido ao ON DELETE CASCADE configurado no SQL
+            supabase.table('balancetes').delete().eq('id', id_balancete).execute()
+            
+            st.success("Balancete excluído da nuvem.")
+            st.session_state['id_atual'] = None
             time.sleep(1)
             st.rerun()
         else:
