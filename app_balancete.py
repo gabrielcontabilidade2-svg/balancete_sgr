@@ -332,25 +332,46 @@ if comunidade_sel:
             else:
                 if st.button("Aplicar Dados do JSON", type="primary"):
                     lancamentos = dados.get("lancamentos", [])
+                    saldos_importados = dados.get("saldos_bancarios", {})
                     
+                    # Agrupadores
                     v_dizimo = sum(l['valor'] for l in lancamentos if l['tipo'] == 'Receita' and l['categoria'] == 'Dízimo')
                     v_ofertas = sum(l['valor'] for l in lancamentos if l['tipo'] == 'Receita' and l['categoria'] == 'Ofertas')
                     v_rendimentos = sum(l['valor'] for l in lancamentos if l['tipo'] == 'Receita' and l['categoria'] == 'Receitas Financeiras')
                     v_repasse = sum(l['valor'] for l in lancamentos if l['tipo'] == 'Despesa' and 'Repasse' in l['categoria'])
                     outras_despesas = [{"Descrição": l['descricao'], "Valor": l['valor']} for l in lancamentos if l['tipo'] == 'Despesa' and 'Repasse' not in l['categoria']]
                     
+                    # --- APLICAÇÃO DOS SALDOS BANCÁRIOS ---
+                    v_cc = saldos_importados.get("conta_corrente", 0.0)
+                    v_poup = saldos_importados.get("poupanca", 0.0)
+                    v_apl = saldos_importados.get("aplicacao", 0.0)
+                    
+                    if v_cc > 0:
+                        st.session_state['usa_corrente'] = True
+                        st.session_state['conta_corrente'] = float(v_cc)
+                    if v_poup > 0:
+                        st.session_state['usa_poupanca'] = True
+                        st.session_state['conta_poupanca'] = float(v_poup)
+                    if v_apl > 0:
+                        st.session_state['usa_aplicacao'] = True
+                        st.session_state['aplicacao'] = float(v_apl)
+                    
+                    # Montagem da tabela de Receitas
                     novas_receitas = [
                         {"Descrição": "Dízimo", "Valor": v_dizimo},
                         {"Descrição": "Ofertas", "Valor": v_ofertas}
                     ]
+                    
                     if v_rendimentos > 0 or st.session_state['usa_poupanca'] or st.session_state['usa_aplicacao']:
                         novas_receitas.append({"Descrição": "Rendimentos Bancários", "Valor": v_rendimentos})
                         
+                    # Montagem da tabela de Despesas
                     novas_despesas = [{"Descrição": "Repasse para Paróquia/Diocese 55%", "Valor": v_repasse}]
                     novas_despesas.extend(outras_despesas)
                     
                     st.session_state['receitas_df'] = pd.DataFrame(novas_receitas)
                     st.session_state['despesas_df'] = pd.DataFrame(novas_despesas)
+                    
                     st.success("Dados aplicados na tabela com sucesso!")
                     st.rerun()
 
