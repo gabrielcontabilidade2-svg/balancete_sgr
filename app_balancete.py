@@ -80,6 +80,8 @@ def carregar_dados_balancete(id_balancete, comunidade, mes, ano):
         st.session_state['usa_poupanca'] = b['usa_poupanca']
         st.session_state['usa_aplicacao'] = b['usa_aplicacao']
         st.session_state['informar_saldo_anterior'] = b['informar_saldo_anterior']
+        # NOVA LINHA: Carrega os detalhes do JSON salvo
+        st.session_state['lancamentos_detalhados'] = b.get('detalhes_json') or []
         
         response_itens = supabase.table('itens_balancete').select('tipo, descricao, valor').eq('id_balancete', id_balancete).execute()
         dados_itens = response_itens.data
@@ -100,6 +102,8 @@ def carregar_dados_balancete(id_balancete, comunidade, mes, ano):
         st.session_state['usa_poupanca'] = False
         st.session_state['usa_aplicacao'] = False
         st.session_state['informar_saldo_anterior'] = False
+        # NOVA LINHA: Inicia vazio
+        st.session_state['lancamentos_detalhados'] = []
         
         df_rec = pd.DataFrame([{"Descrição": "Dízimo", "Valor": 0.0}, {"Descrição": "Ofertas", "Valor": 0.0}])
         df_desp = pd.DataFrame([{"Descrição": "Repasse para Paróquia/Diocese 55%", "Valor": 0.0}])
@@ -121,7 +125,9 @@ def salvar_dados_balancete(id_balancete, comunidade, mes, ano, receitas_df, desp
         "usa_corrente": st.session_state['usa_corrente'],
         "usa_poupanca": st.session_state['usa_poupanca'],
         "usa_aplicacao": st.session_state['usa_aplicacao'],
-        "informar_saldo_anterior": st.session_state['informar_saldo_anterior']
+        "informar_saldo_anterior": st.session_state['informar_saldo_anterior'],
+        # NOVA LINHA: Salva o JSON bruto no Supabase
+        "detalhes_json": st.session_state.get('lancamentos_detalhados', [])
     }
     
     supabase.table('balancetes').upsert(dados_balancete).execute()
@@ -371,6 +377,7 @@ if comunidade_sel:
                     
                     st.session_state['receitas_df'] = pd.DataFrame(novas_receitas)
                     st.session_state['despesas_df'] = pd.DataFrame(novas_despesas)
+                    st.session_state['lancamentos_detalhados'] = lancamentos
                     
                     st.success("Dados aplicados na tabela com sucesso!")
                     st.rerun()
@@ -497,6 +504,65 @@ if comunidade_sel:
             mime="application/pdf",
             use_container_width=True
         )
+
+    # ==============================================================================
+    # EXIBIÇÃO DO DETALHAMENTO DE LANÇAMENTOS (SE HOUVER)
+    # ==============================================================================
+    lancamentos_det = st.session_state.get('lancamentos_detalhados', [])
+    
+    if lancamentos_det:
+        st.divider()
+        st.markdown("### 📜 Detalhamento dos Lançamentos (Importados)")
+        
+        df_det = pd.DataFrame(lancamentos_det)
+        if not df_det.empty and 'data' in df_det.columns:
+            df_det = df_det.sort_values(by="data")
+            
+            for _, row in df_det.iterrows():
+                # Formatação de prefixos e cores
+                prefixo = "🔄" if row.get('categoria') == "Transferência Interna" else ("➖" if row.get('tipo') == "Despesa" else "➕")
+                cor = "#555" if row.get('categoria') == "Transferência Interna" else ("#d32f2f" if row.get('tipo') == "Despesa" else "#2e7d32")
+                
+                with st.container(border=True):
+                    ch1, ch2, ch3 = st.columns([1.5, 6, 2.5])
+                    
+                    # Formatar a Data (Pode vir como YYYY-MM-DD do JSON)
+                    data_str = row.get('data', '')
+                    if isinstance(data_str, str) and "-" in data_str:
+                        try:
+                            data_str = datetime.strptime(data_str, "%Y-%m-%d").strftime("%d/%m/%Y")
+                        except:
+                            pass
+                    ch1.write(f"**{data_str}**")
+                    
+                    # Lógica da Chave NF-e
+                    chave = row.get('chave_nf')
+                    if pd.notna(chave) and str(chave).strip() != "":
+                        chave_str = str(chave).strip()
+                        tipo_nf = "NF"
+                        if chave_str.isdigit() and len(chave_str) == 44:
+                            modelo = chave_str[20:22]
+                            if modelo == "55": tipo_nf = "NF-e"
+                            elif modelo == "65": tipo_nf = "NFC-e"
+                        else:
+                            tipo_nf = "NFS-e"
+                        chave_txt = f"<br><span style='font-size: 0.75rem; color: #a1a1aa;'>🔑 {tipo_nf}: {chave_str}</span>"
+                    else:
+                        chave_txt = ""
+                        
+                    # Doc Fiscal
+                    doc = row.get('doc_fiscal')
+                    doc_txt = f" | Doc: {doc}" if pd.notna(doc) and str(doc).strip() != "" else ""
+                    
+                    # Categoria, Descrição e Conta
+                    cat = row.get('categoria', '')
+                    desc = row.get('descricao', '')
+                    conta = row.get('conta_patrimonial', '')
+                    
+                    ch2.markdown(f"{prefixo} **{cat}** - *{desc}*{doc_txt} ({conta}){chave_txt}", unsafe_allow_html=True)
+                    
+                    valor = float(row.get('valor', 0))
+                    ch3.markdown(f"<p style='color:{cor}; font-weight:bold; font-size:1.1rem; margin:0; text-align:right;'>{format_brl(valor)}</p>", unsafe_allow_html=True)
 
 else:
     # Mensagem exibida enquanto nenhuma comunidade for selecionada
