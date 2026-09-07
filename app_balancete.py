@@ -340,13 +340,6 @@ if comunidade_sel:
                     lancamentos = dados.get("lancamentos", [])
                     saldos_importados = dados.get("saldos_bancarios", {})
                     
-                    # Agrupadores
-                    v_dizimo = sum(l['valor'] for l in lancamentos if l['tipo'] == 'Receita' and l['categoria'] == 'Dízimo')
-                    v_ofertas = sum(l['valor'] for l in lancamentos if l['tipo'] == 'Receita' and l['categoria'] == 'Ofertas')
-                    v_rendimentos = sum(l['valor'] for l in lancamentos if l['tipo'] == 'Receita' and l['categoria'] == 'Receitas Financeiras')
-                    v_repasse = sum(l['valor'] for l in lancamentos if l['tipo'] == 'Despesa' and 'Repasse' in l['categoria'])
-                    outras_despesas = [{"Descrição": l['descricao'], "Valor": l['valor']} for l in lancamentos if l['tipo'] == 'Despesa' and 'Repasse' not in l['categoria']]
-                    
                     # --- APLICAÇÃO DOS SALDOS BANCÁRIOS ---
                     v_cc = saldos_importados.get("conta_corrente", 0.0)
                     v_poup = saldos_importados.get("poupanca", 0.0)
@@ -361,8 +354,14 @@ if comunidade_sel:
                     if v_apl > 0:
                         st.session_state['usa_aplicacao'] = True
                         st.session_state['aplicacao'] = float(v_apl)
+
+                    # ==========================================================
+                    # AGRUPAMENTO DINÂMICO DE RECEITAS
+                    # ==========================================================
+                    v_dizimo = sum(l['valor'] for l in lancamentos if l['tipo'] == 'Receita' and l['categoria'] == 'Dízimo')
+                    v_ofertas = sum(l['valor'] for l in lancamentos if l['tipo'] == 'Receita' and l['categoria'] == 'Ofertas')
+                    v_rendimentos = sum(l['valor'] for l in lancamentos if l['tipo'] == 'Receita' and l['categoria'] == 'Receitas Financeiras')
                     
-                    # Montagem da tabela de Receitas
                     novas_receitas = [
                         {"Descrição": "Dízimo", "Valor": v_dizimo},
                         {"Descrição": "Ofertas", "Valor": v_ofertas}
@@ -371,12 +370,47 @@ if comunidade_sel:
                     if v_rendimentos > 0 or st.session_state['usa_poupanca'] or st.session_state['usa_aplicacao']:
                         novas_receitas.append({"Descrição": "Rendimentos Bancários", "Valor": v_rendimentos})
                         
-                    # Montagem da tabela de Despesas
+                    # Busca TODAS as outras receitas (Rifa, Doação, Cantina ou Reembolso que esteja em 'Outros')
+                    for l in lancamentos:
+                        if l['tipo'] == 'Receita' and l['categoria'] not in ['Dízimo', 'Ofertas', 'Receitas Financeiras']:
+                            # Se for categoria "Outros", usa a descrição digitada pelo usuário
+                            nome = l['descricao'] if l['categoria'] == "Outros" and l['descricao'] else l['categoria']
+                            
+                            encontrou = False
+                            for r in novas_receitas:
+                                if r['Descrição'] == nome:
+                                    r['Valor'] += l['valor']
+                                    encontrou = True
+                                    break
+                            if not encontrou:
+                                novas_receitas.append({"Descrição": nome, "Valor": l['valor']})
+
+                    # ==========================================================
+                    # AGRUPAMENTO DINÂMICO DE DESPESAS
+                    # ==========================================================
+                    v_repasse = sum(l['valor'] for l in lancamentos if l['tipo'] == 'Despesa' and 'Repasse' in l['categoria'])
                     novas_despesas = [{"Descrição": "Repasse para Paróquia/Diocese 55%", "Valor": v_repasse}]
-                    novas_despesas.extend(outras_despesas)
                     
+                    # Agrupa as outras despesas consolidando valores da mesma categoria (Igual ao Balancete Local)
+                    outras_despesas_dict = {}
+                    for l in lancamentos:
+                        if l['tipo'] == 'Despesa' and 'Repasse' not in l['categoria']:
+                            nome_item = l['descricao'] if l['categoria'] == "Outros" and l['descricao'] else l['categoria']
+                            
+                            if nome_item in outras_despesas_dict:
+                                outras_despesas_dict[nome_item] += l['valor']
+                            else:
+                                outras_despesas_dict[nome_item] = l['valor']
+                                
+                    # Transforma o dicionário agrupado em lista para o DataFrame
+                    for desc, val in outras_despesas_dict.items():
+                        novas_despesas.append({"Descrição": desc, "Valor": val})
+                        
+                    # --- SALVANDO NO ESTADO DA PÁGINA ---
                     st.session_state['receitas_df'] = pd.DataFrame(novas_receitas)
                     st.session_state['despesas_df'] = pd.DataFrame(novas_despesas)
+                    
+                    # Mantém o histórico bruto para a tabela do final da tela
                     st.session_state['lancamentos_detalhados'] = lancamentos
                     
                     st.success("Dados aplicados na tabela com sucesso!")
